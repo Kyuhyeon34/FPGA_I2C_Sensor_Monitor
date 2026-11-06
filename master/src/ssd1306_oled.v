@@ -9,6 +9,7 @@ module ssd1306_oled #(
 )(
     input clk, input reset,
     input update, input [7:0] humidity, input [7:0] temperature,
+    input [7:0] temperature_decimal,
     input humidity_valid, input [19:0] distance_bcd, input distance_valid,
     output request, output [7:0] control, output [7:0] data,
     input accepted, input transfer_done, input transfer_error,
@@ -27,6 +28,7 @@ module ssd1306_oled #(
     reg partial_draw;
     reg waiting, pending, latest_valid, draw_valid;
     reg [7:0] latest_h, latest_t, draw_h, draw_t;
+    reg [7:0] latest_t_decimal, draw_t_decimal;
     reg [19:0] latest_distance, draw_distance;
     reg latest_distance_valid, draw_distance_valid;
     wire [7:0] shown_h=(draw_h>99) ? 8'd99 : draw_h;
@@ -104,7 +106,10 @@ module ssd1306_oled #(
                     4: text_character=":";
                     5: text_character=draw_valid ? 8'h30+shown_t/10 : "-";
                     6: text_character=draw_valid ? 8'h30+shown_t%10 : "-";
-                    7: text_character="C";
+                    7: text_character=".";
+                    8: text_character=!draw_valid ? "-" :
+                                      (draw_t_decimal<=9) ? 8'h30+draw_t_decimal : "?";
+                    9: text_character="C";
                     default: text_character=" ";
                 endcase
             end else begin
@@ -145,6 +150,8 @@ module ssd1306_oled #(
                 "c": columns=40'h2844444438;
                 "m": columns=40'h780418047c;
                 ":": columns=40'h0000363600;
+                ".": columns=40'h0000606000;
+                "?": columns=40'h0609510102;
                 "%": columns=40'h6364081363;
                 "-": columns=40'h0808080808;
                 "0": columns=40'h3e4549513e;
@@ -718,6 +725,7 @@ module ssd1306_oled #(
             animation_frame<=0; partial_draw<=0;
             waiting<=0; pending<=0; latest_valid<=0; draw_valid<=0;
             latest_h<=0; latest_t<=0; draw_h<=0; draw_t<=0;
+            latest_t_decimal<=0; draw_t_decimal<=0;
             latest_distance<=0; draw_distance<=0;
             latest_distance_valid<=0; draw_distance_valid<=0;
             ready<=0; error<=0;
@@ -736,6 +744,7 @@ module ssd1306_oled #(
                 end
                 IDLE: if(pending) begin
                     draw_h<=latest_h; draw_t<=latest_t; draw_valid<=latest_valid;
+                    draw_t_decimal<=latest_t_decimal;
                     draw_distance<=latest_distance; draw_distance_valid<=latest_distance_valid;
                     pending<=0; range_index<=0; state<=RANGE; partial_draw<=0; count<=0;
                 end else if(count==ANIMATION_CYCLES-1) begin
@@ -751,6 +760,7 @@ module ssd1306_oled #(
                             INIT: begin
                                 if(command_index==24) begin
                                     draw_h<=latest_h; draw_t<=latest_t; draw_valid<=latest_valid;
+                                    draw_t_decimal<=latest_t_decimal;
                                     draw_distance<=latest_distance; draw_distance_valid<=latest_distance_valid;
                                     pending<=0; range_index<=0; state<=RANGE;
                                     animation_frame<=0; partial_draw<=0; count<=0;
@@ -778,6 +788,7 @@ module ssd1306_oled #(
             if(update) begin
                 if(humidity_valid) begin
                     latest_h<=humidity; latest_t<=temperature; latest_valid<=1;
+                    latest_t_decimal<=temperature_decimal;
                 end
                 if(distance_valid) begin
                     latest_distance<=distance_bcd; latest_distance_valid<=1;

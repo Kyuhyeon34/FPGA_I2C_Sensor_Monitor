@@ -71,6 +71,7 @@ module tb_top_polling #(
                 reads=reads+1;
             end
             if(oled_wr_en && oled_control==8'h40) oled_bytes=oled_bytes+1;
+            if(wr_en) $fatal(1,"BTNU generated a sensor register write");
         end
     end
     // Decode every physical UART line to catch overlapping or truncated output.
@@ -96,14 +97,23 @@ module tb_top_polling #(
 
     task next_frame(input [15:0] expected_bcd, input [15:0] expected_distance,
                     input bit valid_dht);
+        integer shown_distance;
+        reg [15:0] distance_bcd;
         @(posedge dut.printing); #1;
         if(dut.display_bcd !== expected_bcd || dut.distance_cm !== expected_distance ||
            led[15] !== valid_dht || led[14] !== !valid_dht || led[13])
             $fatal(1,"Automatic sensor update incorrect: FND=%h distance=%0d flags=%h",
                    dut.display_bcd,dut.distance_cm,led);
+        repeat(20) @(negedge clk); // Shared 16-cycle decimal conversion.
+        shown_distance=(expected_distance>9999) ? 9999 : expected_distance;
+        distance_bcd=((shown_distance/1000)<<12) | (((shown_distance/100)%10)<<8) |
+                     (((shown_distance/10)%10)<<4) | (shown_distance%10);
+        if(dut.fnd_bcd !== (dut.distance_mode ? distance_bcd : expected_bcd) ||
+           dut.fnd_dots !== (dut.distance_mode ? 4'b0000 : 4'b0100))
+            $fatal(1,"Automatic update did not reach selected FND mode");
         wait(!dut.printing);
     endtask
-    task press_write;
+    task press_mode;
         @(negedge clk); btn[1]=1;
         repeat(12) @(negedge clk); btn[1]=0;
     endtask
@@ -124,22 +134,24 @@ module tb_top_polling #(
         dist_valid=1;
         next_frame(16'h1234,65535,1);
 
-        // A human write arriving with a due poll must win; polling resumes after it.
+        // Local mode changes work during OLED traffic and UART printing.
         wait(dut.bus_owner==2 && !dut.sensor_pending);
-        force dut.poll_count=POLL_CYCLES-2;
+        press_mode();
+        if(!dut.distance_mode || dut.fnd_bcd!==16'h9999 || dut.fnd_dots!==0)
+            $fatal(1,"BTNU did not show distance during OLED traffic");
         fork
-            press_write();
+            next_frame(16'h1234,65535,1);
             begin
-                wait(dut.write_pulse);
-                force dut.poll_count=POLL_CYCLES-1;
-                @(posedge clk); #1;
-                if(!dut.sensor_pending || dut.pending_read)
-                    $fatal(1,"Automatic poll took priority over USER write");
-                release dut.poll_count;
+                wait(dut.printing);
+                press_mode();
+                if(dut.distance_mode || dut.fnd_bcd!==16'h1234 || dut.fnd_dots!==4'b0100)
+                    $fatal(1,"BTNU did not show H/T during UART printing");
+                repeat(12) @(negedge clk);
+                press_mode();
+                if(!dut.distance_mode || dut.fnd_bcd!==16'h9999)
+                    $fatal(1,"BTNU did not return to distance during UART printing");
             end
         join
-        wait(user_reg==8'h5a);
-        next_frame(16'h1234,65535,1);
 
         // Keep good values on disconnection, then recover without a button or reset.
         connected=0;
@@ -169,8 +181,9 @@ module tb_top_polling #(
         reset=1; repeat(8) @(negedge clk); reset=0;
         hum_int=48; tmp_int=28; dist_cm=99;
         next_frame(16'h4828,99,1);
+        if(dut.distance_mode || dut.fnd_bcd!==16'h4828) $fatal(1,"Reset did not restore H/T mode");
         if(reads<10 || uart_lines<8) $fatal(1,"Not enough automatic transactions exercised");
-        $display("PASS: tb_top_polling: interval=%0d, %0d reads, %0d UART lines, OLED progress, USER write priority, validity, NACK/timeout recovery and reset",POLL_CYCLES,reads,uart_lines);
+        $display("PASS: %m: interval=%0d, %0d reads, %0d UART lines, OLED progress, BTNU during OLED/UART, FND distance updates, validity, NACK/timeout recovery and reset",POLL_CYCLES,reads,uart_lines);
         $finish;
     end
     initial begin #60_000_000; $fatal(1,"Automatic polling watchdog timeout"); end

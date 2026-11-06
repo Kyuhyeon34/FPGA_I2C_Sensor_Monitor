@@ -15,7 +15,7 @@ module tb_oled;
           .DEBOUNCE_CYCLES(3), .OLED_POWERUP_CYCLES(20), .OLED_RETRY_CYCLES(1000),
           .POLL_INTERVAL_CYCLES(0)) dut(.*);
 
-    reg [7:0] hum_int=47, tmp_int=27;
+    reg [7:0] hum_int=47, tmp_int=27, tmp_dec=0;
     reg [15:0] dist_cm=7;
     reg dht_valid=1, dist_valid=1, corrupt_id=0;
     wire [7:0] sensor_ptr, sensor_rd, sensor_wr_addr, sensor_wr_data, user_reg;
@@ -29,7 +29,7 @@ module tb_oled;
     );
     i2c_regs regs (
         .clk(clk), .reset(sensor_reset), .snapshot(snapshot),
-        .hum_int(hum_int), .hum_dec(8'h00), .tmp_int(tmp_int), .tmp_dec(8'h00),
+        .hum_int(hum_int), .hum_dec(8'h00), .tmp_int(tmp_int), .tmp_dec(tmp_dec),
         .dist_cm(dist_cm), .dht_valid(dht_valid), .dist_valid(dist_valid),
         .wr_en(sensor_wr_en), .wr_addr(sensor_wr_addr), .wr_data(sensor_wr_data),
         .rd_addr(sensor_ptr), .rd_data(sensor_rd), .user_reg(user_reg)
@@ -153,6 +153,40 @@ module tb_oled;
         if(ram[384] !== 8'h7f || ram[384+48] !== 8'h38 || ram[384+54] !== 8'h7c)
             $fatal(1,"DIST label/cm unit incorrect");
     endtask
+    task check_temperature(input [39:0] text);
+        reg [39:0] glyph;
+        reg [7:0] ch, column_byte;
+        integer d,c;
+        // TEMP starts at y=12: each glyph spans OLED RAM pages 1 and 2.
+        for(d=0;d<5;d=d+1) begin
+            ch=text[(4-d)*8 +: 8];
+            case(ch)
+                "0": glyph=40'h3e4549513e;
+                "1": glyph=40'h00407f4200;
+                "2": glyph=40'h4649516142;
+                "3": glyph=40'h314b454121;
+                "4": glyph=40'h107f121418;
+                "5": glyph=40'h3945454527;
+                "6": glyph=40'h3049494a3c;
+                "7": glyph=40'h0305097101;
+                "8": glyph=40'h3649494936;
+                "9": glyph=40'h1e29494906;
+                ".": glyph=40'h0000606000;
+                "?": glyph=40'h0609510102;
+                "C": glyph=40'h224141413e;
+                "-": glyph=40'h0808080808;
+                default: $fatal(1,"Invalid expected temperature character");
+            endcase
+            for(c=0;c<5;c=c+1) begin
+                column_byte=glyph[c*8 +: 8];
+                if(ram[128+30+d*6+c] !== {column_byte[3:0],4'b0000} ||
+                   ram[256+30+d*6+c] !== {4'b0000,column_byte[7:4]})
+                    $fatal(1,"Temperature raster mismatch: %s digit %0d column %0d",text,d,c);
+            end
+            if(ram[128+35+d*6]!==0 || ram[256+35+d*6]!==0)
+                $fatal(1,"Temperature glyph spacing incorrect");
+        end
+    endtask
     initial begin
         integer initial_commands, step, p, c, old_icon_bytes;
         repeat(20) @(negedge clk); reset=0; slave_reset=0;
@@ -165,6 +199,7 @@ module tb_oled;
            ram[128+30]!==8'h80 || ram[256+30]!==0)
             $fatal(1,"Initial HUM:--%% / TEMP:--C placeholders incorrect");
         check_distance("---");
+        check_temperature("--.-C");
         check_layout();
         $writememh("oled_boot_screen.hex",ram);
         $writememh("oled_animation_0.hex",ram);
@@ -195,6 +230,7 @@ module tb_oled;
            ram[128+30]!==8'h20 || ram[256+30]!==8'h04 || ram[128+36]!==8'h10)
             $fatal(1,"OLED HUM:47%% / TEMP:27C raster incorrect");
         check_distance("  7");
+        check_temperature("27.0C");
         check_layout();
         // Updating during rendering must retain the current snapshot, then draw
         // the newest queued sample. Sensor operations keep priority on the bus.
@@ -237,15 +273,34 @@ module tb_oled;
         oled_connected=0; hum_int=47; tmp_int=27;
         read_sensor(16'h4727); wait(led[11]);
         if(led[14:13] || !led[15]) $fatal(1,"OLED NACK leaked into sensor status");
-        press(1); wait(dut.bus_owner==1); wait(led[15]); #1;
-        if(user_reg !== 8'h55 || led[14:13]) $fatal(1,"OLED fault blocked USER write");
+        press(1);
+        if(!dut.distance_mode || dut.fnd_bcd!==16'h0256 || dut.fnd_dots!==0 || user_reg!==0)
+            $fatal(1,"OLED fault blocked local FND mode change");
+        read_sensor(16'h4727);
         oled_connected=1; screen_idle();
         if(led[11] || !led[10] || !display_on || ram[24]!==8'h18 || ram[30]!==8'h01)
             $fatal(1,"OLED reconnect/retry failed");
         check_distance("256");
         check_layout();
-        $display("PASS: tb_oled: three-digit distance, 99/100/999/1000/65535 boundaries, independent sensor validity, retained history, Slowpoke animation, partial updates, shared bus and reconnect");
+        // Decimal temperature uses the received 0x04 byte, with the same snapshot/validity.
+        hum_int=36; tmp_int=28; tmp_dec=4; dist_cm=3;
+        read_sensor(16'h3628); screen_idle();
+        check_temperature("28.4C"); check_distance("  3"); check_layout();
+        $writememh("oled_decimal.hex",ram);
+        dht_valid=0; tmp_dec=9;
+        read_sensor_status(16'h3628,0); screen_idle(); check_temperature("28.4C");
+        dht_valid=1; tmp_dec=0;
+        read_sensor(16'h3628); screen_idle(); check_temperature("28.0C");
+        tmp_dec=9;
+        read_sensor(16'h3628); screen_idle(); check_temperature("28.9C");
+        tmp_dec=255;
+        read_sensor(16'h3628); screen_idle(); check_temperature("28.?C");
+        tmp_dec=4;
+        read_sensor(16'h3628); screen_idle(); check_temperature("28.4C");
+        check_distance("  3"); check_layout();
+        $writememh("oled_screen.hex",ram);
+        $display("PASS: tb_oled: decimal temperature 28.4/0/9/invalid, glyph pixels and validity, distance boundaries, snapshots, Slowpoke animation, shared bus and reconnect");
         $finish;
     end
-    initial begin #300_000_000; $fatal(1,"OLED test watchdog timeout"); end
+    initial begin #450_000_000; $fatal(1,"OLED test watchdog timeout"); end
 endmodule

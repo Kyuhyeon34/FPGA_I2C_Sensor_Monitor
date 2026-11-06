@@ -14,8 +14,8 @@ module top #(
 )(
     input clk,
     input reset,                 // SW15: high resets, low runs.
-    input [1:0] btn,             // Center: read all sensors. Up: write.
-    input [7:0] sw,
+    input [1:0] btn,             // Center: read all sensors. Up: toggle FND mode.
+    input [7:0] sw,              // Reserved; retained for the board pin constraints.
     inout sda,                   // JA1
     inout scl,                   // JA2
     output [15:0] led,
@@ -29,30 +29,33 @@ module top #(
         if (reset) reset_pipe <= 4'b1111;
         else reset_pipe <= {reset_pipe[2:0], 1'b0};
     end
-    (* ASYNC_REG = "TRUE" *) reg [7:0] sw_meta, sw_sync;
-    always @(posedge clk or posedge rst) begin
-        if (rst) begin sw_meta <= 0; sw_sync <= 0; end
-        else begin sw_meta <= sw; sw_sync <= sw_meta; end
-    end
-    wire read_pulse, write_pulse;
+    wire read_pulse, mode_pulse;
     button_pulse #(.STABLE_CYCLES(DEBOUNCE_CYCLES)) u_read_button
         (.clk(clk), .reset(rst), .button(btn[0]), .pulse(read_pulse));
-    button_pulse #(.STABLE_CYCLES(DEBOUNCE_CYCLES)) u_write_button
-        (.clk(clk), .reset(rst), .button(btn[1]), .pulse(write_pulse));
+    button_pulse #(.STABLE_CYCLES(DEBOUNCE_CYCLES)) u_mode_button
+        (.clk(clk), .reset(rst), .button(btn[1]), .pulse(mode_pulse));
+    reg distance_mode;
+    always @(posedge clk or posedge rst) begin
+        if (rst) distance_mode <= 0;
+        else if (mode_pulse) distance_mode <= ~distance_mode;
+    end
 
     wire [7:0] rx_data;
     wire busy, done, nack_error, timeout_error;
-    reg command_read, master_start, reading_frame;
+    reg master_start, reading_frame;
     localparam [1:0] OWNER_NONE=0, OWNER_SENSOR=1, OWNER_OLED=2;
     reg [1:0] bus_owner;
-    reg sensor_pending, pending_read, sensor_nack;
-    reg [7:0] pending_tx, master_register;
+    reg sensor_pending, sensor_nack;
+    reg [7:0] master_register;
     reg [6:0] master_address;
     reg master_read;
     reg [7:0] tx_data, humidity, temperature;
     reg [15:0] distance_cm;
     wire [63:0] frame_data;
     reg [15:0] display_bcd;
+    reg [15:0] distance_display_bcd;
+    wire [15:0] fnd_bcd = distance_mode ? distance_display_bcd : display_bcd;
+    wire [3:0] fnd_dots = distance_mode ? 4'b0000 : 4'b0100;
     reg pass, fail;
 
     // Actual i2c_regs map: 00=ID, 01=H integer, 02=H decimal,
@@ -60,6 +63,7 @@ module top #(
     // DHT11 values may be used only when status bit 0 says checksum OK.
     wire [7:0] completed_humidity = frame_data[15:8];
     wire [7:0] completed_temperature = frame_data[31:24];
+    wire [7:0] completed_temperature_decimal = frame_data[39:32];
     wire [15:0] completed_distance = {frame_data[47:40], frame_data[55:48]};
     wire id_valid = frame_data[7:0] == 8'ha5;
     wire frame_valid = id_valid && frame_data[56];
@@ -68,6 +72,7 @@ module top #(
     reg [5:0] print_index;
     reg printing, uart_start, print_valid;
     reg [7:0] uart_data, print_humidity, print_temperature;
+    reg [7:0] print_temperature_decimal;
     reg print_distance_valid, print_id_valid;
     wire [19:0] converted_distance;
     wire distance_converted;
@@ -85,7 +90,7 @@ module top #(
     wire oled_request, oled_ready, oled_error;
     wire [7:0] oled_control, oled_data;
     reg oled_accepted, oled_transfer_done, oled_transfer_error;
-    wire completed_read = done && bus_owner==OWNER_SENSOR && command_read &&
+    wire completed_read = done && bus_owner==OWNER_SENSOR &&
                           !nack_error && !timeout_error;
     // Sensor values/flags are captured with print_data, then used only after
     // the 16-cycle conversion completes. New reads wait for UART completion.
@@ -99,6 +104,7 @@ module top #(
                       .ANIMATION_CYCLES(OLED_ANIMATION_CYCLES)) u_display (
             .clk(clk), .reset(rst), .update(oled_update),
             .humidity(print_humidity), .temperature(print_temperature),
+            .temperature_decimal(print_temperature_decimal),
             .humidity_valid(print_valid), .distance_bcd(converted_distance),
             .distance_valid(print_distance_valid),
             .request(oled_request), .control(oled_control), .data(oled_data),
@@ -122,9 +128,9 @@ module top #(
         .timeout_error(timeout_error), .scl(scl), .sda(sda)
     );
     assign led = {pass, fail, sensor_nack, (busy || reading_frame), oled_error, oled_ready, 2'b00, humidity};
-    // HH.TT: decimal point after the humidity's ones digit.
+    // HH.TT or four-digit distance in cm, selected locally with BTNU.
     fnd_display #(.CLOCK_HZ(CLOCK_HZ)) u_display (
-        .clk(clk), .reset(rst), .bcd_data(display_bcd), .dot_en(4'b0100),
+        .clk(clk), .reset(rst), .bcd_data(fnd_bcd), .dot_en(fnd_dots),
         .seg(seg), .an(an)
     );
     uart_tx #(.CLOCK_HZ(CLOCK_HZ), .BAUD(BAUD)) u_uart (
@@ -191,14 +197,11 @@ module top #(
 
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            command_read <= 0;
             master_start <= 0;
             reading_frame <= 0;
             bus_owner <= OWNER_NONE;
             sensor_pending <= 0;
             poll_count <= POLL_TICKS-1; // First read immediately after reset.
-            pending_read <= 0;
-            pending_tx <= 0;
             sensor_nack <= 0;
             master_register <= 0;
             master_address <= SLAVE_ADDR;
@@ -211,6 +214,7 @@ module top #(
             temperature <= 0;
             distance_cm <= 0;
             display_bcd <= 0;
+            distance_display_bcd <= 0;
             pass <= 0;
             fail <= 0;
             printing <= 0;
@@ -218,6 +222,7 @@ module top #(
             print_data <= 0;
             print_humidity <= 0;
             print_temperature <= 0;
+            print_temperature_decimal <= 0;
             print_distance_valid <= 0;
             print_id_valid <= 0;
             print_valid <= 0;
@@ -231,29 +236,26 @@ module top #(
             oled_transfer_done <= 0;
             if (POLL_INTERVAL_CYCLES > 0 && !poll_due)
                 poll_count <= poll_count + 1'b1;
+            // Retain only a validated distance after the shared BCD conversion.
+            if (distance_converted && print_distance_valid)
+                distance_display_bcd <= (converted_distance[19:16] != 0) ?
+                                        16'h9999 : converted_distance[15:0];
             // Queue one human request during an OLED byte transfer. It wins at
             // the next transaction boundary; sensor bursts are never interrupted.
-            if (can_queue_sensor && (read_pulse || write_pulse)) begin
+            if (can_queue_sensor && (read_pulse || poll_due)) begin
                 sensor_pending <= 1;
-                pending_read <= read_pulse;
-                pending_tx <= sw_sync;
-            end else if (can_queue_sensor && poll_due) begin
-                sensor_pending <= 1;
-                pending_read <= 1;
-                pending_tx <= 0;
             end
             if (bus_available) begin
                 if (sensor_pending) begin
                     sensor_pending <= 0;
-                    command_read <= pending_read;
-                    master_read <= pending_read;
+                    master_read <= 1;
                     master_address <= SLAVE_ADDR;
-                    master_register <= pending_read ? 8'h00 : 8'h10;
-                    tx_data <= pending_tx;
+                    master_register <= 8'h00;
+                    tx_data <= 0;
                     master_start <= 1;
                     bus_owner <= OWNER_SENSOR;
-                    reading_frame <= pending_read;
-                    if (pending_read) poll_count <= 0;
+                    reading_frame <= 1;
+                    poll_count <= 0;
                     pass <= 0;
                     fail <= 0;
                     sensor_nack <= 0;
@@ -279,7 +281,7 @@ module top #(
                     reading_frame <= 0;
                     pass <= 0;
                     fail <= 1;
-                end else if (command_read) begin
+                end else begin
                     reading_frame <= 0;
                     pass <= frame_valid;
                     fail <= !frame_valid;
@@ -292,15 +294,13 @@ module top #(
                     print_data <= frame_data;
                     print_humidity <= completed_humidity;
                     print_temperature <= completed_temperature;
+                    print_temperature_decimal <= completed_temperature_decimal;
                     print_distance_valid <= distance_valid;
                     print_id_valid <= id_valid;
                     print_valid <= frame_valid;
                     printing <= 1;
                     print_index <= 0;
                     print_state <= 3;
-                end else begin
-                    pass <= 1;
-                    fail <= 0;
                 end
                 end
             end

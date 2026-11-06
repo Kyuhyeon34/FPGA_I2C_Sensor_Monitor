@@ -14,3 +14,5 @@
 xsim.dir/
 # create_project.tcl 이 만드는 프로젝트 폴더 (다시 만들 수 있음)
 vivado/
+# Master simulation outputs (recreated by master/sim/run_sim.ps1)
+master/sim/build/

@@ -70,6 +70,38 @@ module tb_top;
         #100;
         if(RsTx !== 1) $fatal(1,"UART stop bit invalid");
     endtask
+    task check_fnd(input [15:0] digits, input [3:0] dots);
+        reg [3:0] number;
+        reg [6:0] expected_segments;
+        integer digit, i;
+        repeat(4) begin
+            @(posedge clk); #1;
+            case(an)
+                4'b1110: digit=0;
+                4'b1101: digit=1;
+                4'b1011: digit=2;
+                4'b0111: digit=3;
+                default: $fatal(1,"Invalid FND anode");
+            endcase
+            number=digits[digit*4 +: 4];
+            case(number)
+                0: expected_segments=7'h40;
+                1: expected_segments=7'h79;
+                2: expected_segments=7'h24;
+                3: expected_segments=7'h30;
+                4: expected_segments=7'h19;
+                5: expected_segments=7'h12;
+                6: expected_segments=7'h02;
+                7: expected_segments=7'h78;
+                8: expected_segments=7'h00;
+                9: expected_segments=7'h10;
+                default: $fatal(1,"Invalid expected decimal digit");
+            endcase
+            if(seg !== {~dots[digit],expected_segments})
+                $fatal(1,"FND digit %0d incorrect: %h",digit,seg);
+            repeat(1000) @(negedge clk);
+        end
+    endtask
     task check_read(input [63:0] raw, input [15:0] expected_bcd,
                     input [7:0] expected_humidity, input bit valid_frame,
                     input [399:0] expected_line);
@@ -77,10 +109,17 @@ module tb_top;
         reg [7:0] value, serial_value;
         reg [15:0] previous_bcd;
         reg [15:0] previous_distance, expected_distance;
+        reg [15:0] expected_distance_bcd;
+        reg previous_mode;
+        integer shown_distance;
         integer b, c, old_starts, old_stops;
         previous_bcd=dut.display_bcd; old_starts=starts; old_stops=stops;
         previous_distance=dut.distance_cm;
         expected_distance=(raw[7:0]==8'ha5 && raw[57]) ? {raw[47:40],raw[55:48]} : previous_distance;
+        shown_distance=(expected_distance>9999) ? 9999 : expected_distance;
+        expected_distance_bcd=((shown_distance/1000)<<12) | (((shown_distance/100)%10)<<8) |
+                              (((shown_distance/10)%10)<<4) | (shown_distance%10);
+        previous_mode=dut.distance_mode;
         fork
             begin
                 press(0); wait(dut.printing); #1;
@@ -117,24 +156,37 @@ module tb_top;
             end
             begin
                 wait(dut.reading_frame); repeat(100) @(negedge clk);
-                press(0); press(1); // Ignored while a read is in progress.
+                press(0); // Extra read is ignored while a read is in progress.
+                press(1);
+                if(dut.distance_mode !== !previous_mode) $fatal(1,"BTNU ignored during I2C read");
+                repeat(12) @(negedge clk);
+                press(1);
+                if(dut.distance_mode !== previous_mode) $fatal(1,"BTNU did not restore FND mode");
             end
         join
         wait(!dut.printing); repeat(5) @(negedge clk);
         if(starts != old_starts+2 || stops != old_stops+1)
             $fatal(1,"Expected START + repeated START and exactly one STOP");
         if(reg_ptr !== 8'h08) $fatal(1,"Slave register pointer did not advance to 8");
+        if(dut.distance_display_bcd !== expected_distance_bcd)
+            $fatal(1,"FND distance conversion/retention incorrect");
+        check_fnd(dut.distance_mode ? expected_distance_bcd : expected_bcd,
+                  dut.distance_mode ? 4'b0000 : 4'b0100);
         checks=checks+1;
     endtask
     initial begin
         reg [7:0] value;
         reg [15:0] previous_bcd;
+        integer old_starts;
         repeat(20) @(negedge clk); reset=0; slave_reset=0;
         repeat(20) @(negedge clk);
         if(led !== 0 || RsTx !== 1) $fatal(1,"Reset outputs incorrect");
         btn[0]=1; @(negedge clk); btn[0]=0;
         repeat(12) @(negedge clk);
         if(starts != 0) $fatal(1,"Button debounce failed");
+        btn[1]=1; @(negedge clk); btn[1]=0;
+        repeat(12) @(negedge clk);
+        if(dut.distance_mode) $fatal(1,"BTNU debounce failed");
         // Values changing mid-read must not tear the Slave's START snapshot.
         fork
             check_read(64'h030700071b002fa5,16'h4727,47,1,
@@ -157,23 +209,19 @@ module tb_top;
         // No Slave reset: the previous read left pointer=8, but this read starts at 0.
         check_read(64'h032c010017003ca5,16'h6023,60,1,
                    {"H=060 T=023 D=00300cm RX=A5 3C 00 17 00 01 2C 03",8'h0d,8'h0a});
-        // USER write must send both register pointer 0x10 and switch data.
-        fork
-            begin press(1); wait(led[15]); #1;
-                if(user_reg !== 8'h3c || last_rx !== 8'h3c || dut.display_bcd !== 16'h6023)
-                    $fatal(1,"USER write or display preservation failed");
-            end
-            begin
-                wait_start(); receive_byte(value);
-                if(value !== 8'h84) $fatal(1,"Write address incorrect");
-                check_ack(1); receive_byte(value);
-                if(value !== 8'h10) $fatal(1,"USER register address incorrect");
-                check_ack(1); receive_byte(value);
-                if(value !== 8'h3c) $fatal(1,"Switch write data incorrect");
-                check_ack(1); wait_stop();
-            end
-        join
-        if(reg_ptr !== 8'h11) $fatal(1,"USER write pointer incorrect");
+        // A held BTNU changes only the local FND, exactly once per press.
+        old_starts=starts;
+        @(negedge clk); btn[1]=1;
+        repeat(200) @(negedge clk);
+        if(!dut.distance_mode) $fatal(1,"BTNU did not select distance");
+        repeat(200) @(negedge clk);
+        if(!dut.distance_mode) $fatal(1,"Held BTNU toggled more than once");
+        btn[1]=0; repeat(12) @(negedge clk);
+        check_fnd(16'h0300,4'b0000);
+        press(1); check_fnd(16'h6023,4'b0100);
+        press(1); check_fnd(16'h0300,4'b0000);
+        if(starts!=old_starts || user_reg!==0 || reg_ptr!==8'h08)
+            $fatal(1,"FND mode button generated a sensor write");
         check_read(64'h032c010017003ca5,16'h6023,60,1,
                    {"H=060 T=023 D=00300cm RX=A5 3C 00 17 00 01 2C 03",8'h0d,8'h0a});
         // Invalid DHT checksum must preserve the last valid sensor pair.
@@ -193,6 +241,12 @@ module tb_top;
         dist_valid=1;
         check_read(64'h03ffff00090064a5,16'h9909,100,1,
                    {"H=100 T=009 D=65535cm RX=A5 64 00 09 00 FF FF 03",8'h0d,8'h0a});
+        dist_cm=9999;
+        check_read(64'h030f2700090064a5,16'h9909,100,1,
+                   {"H=100 T=009 D=09999cm RX=A5 64 00 09 00 27 0F 03",8'h0d,8'h0a});
+        dist_cm=10000;
+        check_read(64'h03102700090064a5,16'h9909,100,1,
+                   {"H=100 T=009 D=10000cm RX=A5 64 00 09 00 27 10 03",8'h0d,8'h0a});
         dist_cm=256;
         check_read(64'h03000100090064a5,16'h9909,100,1,
                    {"H=100 T=009 D=00256cm RX=A5 64 00 09 00 01 00 03",8'h0d,8'h0a});
@@ -208,6 +262,7 @@ module tb_top;
         dht_valid=1;
         // Reset Master only: a fresh indexed read must still work.
         reset=1; repeat(8) @(negedge clk); reset=0; repeat(10) @(negedge clk);
+        if(dut.distance_mode || dut.fnd_dots!==4'b0100) $fatal(1,"Reset did not restore H/T mode");
         hum_int=45; tmp_int=27; dist_cm=7;
         check_read(64'h030700001b002da5,16'h4527,45,1,
                    {"H=045 T=027 D=00007cm RX=A5 2D 00 1B 00 00 07 03",8'h0d,8'h0a});
@@ -236,7 +291,7 @@ module tb_top;
         // Recover without resetting the Master or manually aligning the pointer.
         check_read(64'h030700001b002da5,16'h4527,45,1,
                    {"H=045 T=027 D=00007cm RX=A5 2D 00 1B 00 00 07 03",8'h0d,8'h0a});
-        $display("PASS: tb_top: %0d actual-Slave register reads, repeated START, burst ACK/NACK, snapshots, USER writes, FND, UART, ID/status, reset and error recovery",checks);
+        $display("PASS: tb_top: %0d actual-Slave reads, BTNU toggle/debounce/hold, FND digits/dots, 9999/10000 saturation, UART, snapshots, ID/status, reset and error recovery",checks);
         $finish;
     end
     initial begin #8_000_000; $fatal(1,"Integration test watchdog timeout"); end
