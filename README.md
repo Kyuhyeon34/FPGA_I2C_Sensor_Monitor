@@ -9,14 +9,14 @@ FND · UART · SSD1306 OLED에 표시하는 Verilog 팀 프로젝트 (Vivado 202
 | 담당 | 이름 | 구현 | 브랜치 · 폴더 |
 |---|---|---|---|
 | **I2C Slave** | 이규현 ([@Kyuhyeon34](https://github.com/Kyuhyeon34)) | DHT11 · HC-SR04 센서 드라이버, 스냅샷 레지스터 맵, I2C Slave FSM, 로컬 FND · UART | `slave` → `slave/` |
-| **I2C Master** | 박수민 ([@clap-min99](https://github.com/clap-min99)) | I2C Master FSM, 8바이트 burst read · USER 쓰기, 유효성 검사, BCD 변환, OLED · FND · UART | `master` → `master/` |
+| **I2C Master** | 박수민 ([@clap-min99](https://github.com/clap-min99)) | I2C Master FSM, 8바이트 자동 burst read · BTNU FND 모드 전환, 유효성 검사, BCD 변환, OLED · FND · UART | `master` → `master/` |
 
-> 두 브랜치를 `main`에 합치기 전까지 `master/`, `slave/` 폴더에는 안내 README만 있습니다.
+> `master/`에는 Master 소스·핀 설정·시뮬레이션·Vivado 생성/빌드 스크립트가 포함되어 있습니다. Slave 코드는 `slave` 브랜치에 있습니다.
 
 ## 기능
 - **Slave** : DHT11(습도·온도)과 HC-SR04(거리)를 각자 FSM으로 주기 측정, I2C START 순간 값을 스냅샷해 레지스터로 응답
-- **Master** : 가운데 버튼으로 Slave `0x42`의 레지스터 `0x00`부터 8바이트 읽기, 스위치 값을 USER 레지스터(`0x10`)에 쓰기
-- **OLED** : 같은 I2C 버스의 SSD1306(`0x3C`, 128×32)에 `HUM / TEMP / DIST` 3줄 표시
+- **Master** : 기본 100ms 간격 자동 읽기 및 가운데 버튼으로 Slave `0x42`의 레지스터 `0x00`부터 8바이트 읽기, 위 버튼(BTNU)을 누를 때마다 Master FND를 온습도 ↔ 거리(cm) 표시로 전환
+- **OLED** : 같은 I2C 버스의 SSD1306(`0x3C`, 128×32)에 `HUM / TEMP(소수 첫째 자리) / DIST` 3줄 표시
 - **유효성 검사** : ID(`0xA5`)와 STATUS 비트로 DHT11 / 초음파 값을 따로 판정, 오류 시 이전 정상값 유지
 
 ## 시스템 사양
@@ -54,7 +54,7 @@ FND · UART · SSD1306 OLED에 표시하는 Verilog 팀 프로젝트 (Vivado 202
 | 0x03 / 0x04 | 온도 정수 / 소수 | R | TEMP 표시 |
 | 0x05 / 0x06 | 거리 상위 / 하위 바이트 (cm) | R | 16비트 거리 복원 |
 | 0x07 | bit0 : DHT11 OK, bit1 : 초음파 OK | R | 센서별 유효 판정 |
-| 0x10 | USER (Slave `led[7:0]`에 표시) | R/W | 스위치 값 쓰기 |
+| 0x10 | USER (Slave `led[7:0]`에 표시) | R/W | 현재 Master에서는 미사용 |
 
 ## FSM
 | I2C Master | I2C Slave |
@@ -73,7 +73,12 @@ FND · UART · SSD1306 OLED에 표시하는 Verilog 팀 프로젝트 (Vivado 202
 
 ```
 master/                 I2C Master 보드 (박수민)                 [master 브랜치]
-  top, i2c_master, button_pulse, binary_to_bcd16, OLED / FND / UART 제어
+  src/                  top, i2c_master, button_pulse, binary_to_bcd16, OLED / FND / UART
+  sim/                  코어·통합·OLED·자동 읽기 테스트 및 Slave 참조 RTL
+  constr/               Basys3_master.xdc
+  assets/               OLED 검증용 프레임 데이터
+  create_project.tcl
+  scripts/              비트스트림 빌드·타이밍·DRC 검증
 slave/                  I2C Slave 보드 (이규현)                  [slave 브랜치]
   src/
     top_slave.v         최상위 (센서 → 레지스터 → I2C, 로컬 FND · UART)
@@ -91,14 +96,14 @@ docs/figs/              블록도, FSM 그림
 
 ## 실행
 - Slave : Vivado Tcl Console에서 `source slave/create_project.tcl` → `slave/vivado/`에 프로젝트 생성, 바로 올리기 : `slave/bitstream/top_slave.bit`
-- Master : `master/` 폴더 README 참고
+- Master : Vivado Tcl Console에서 `source master/create_project.tcl` → `master/vivado/`에 프로젝트 생성. 빌드·시뮬레이션은 [master/README.md](master/README.md) 참고
 
 ## 결과
 | 항목 | Master | Slave |
 |---|---|---|
-| 시뮬레이션 | `tb_i2c_master`, `tb_top`(실제 i2c_slave + i2c_regs 연동), `tb_oled` | `tb_i2c_slave` 18개 check 모두 PASS (주소 ACK, WHO_AM_I, USER 쓰기 / 다시 읽기, 7바이트 burst read, 잘못된 주소 NACK, STOP 후 busy 해제)<br>`tb_sensors` 3개 PASS (DHT11 정상 프레임 / checksum 오류 거부, HC-SR04 100cm) |
-| LUT / FF | 908 / 586 | 578 / 475 |
-| WNS / WHS | +0.390 ns / +0.109 ns | +3.126 ns / +0.090 ns |
+| 시뮬레이션 | `tb_i2c_master`, `tb_top`(BTNU 전환·거리 FND·실제 Slave 연동), `tb_oled`, `tb_top_polling`, `tb_top_polling_fast` 모두 PASS | `tb_i2c_slave` 18개 check 모두 PASS (주소 ACK, WHO_AM_I, USER 쓰기 / 다시 읽기, 7바이트 burst read, 잘못된 주소 NACK, STOP 후 busy 해제)<br>`tb_sensors` 3개 PASS (DHT11 정상 프레임 / checksum 오류 거부, HC-SR04 100cm) |
+| LUT / FF | 997 / 615 | 578 / 475 |
+| WNS / WHS | +0.069 ns / +0.122 ns | +3.126 ns / +0.090 ns |
 
 OLED 출력 (시뮬레이션 RAM 복원, DHT11 무효 · 거리만 유효) :
 
@@ -113,5 +118,5 @@ OLED 출력 (시뮬레이션 RAM 복원, DHT11 무효 · 거리만 유효) :
 | Master 거리 BCD 변환 타이밍 실패 (WNS −6.687 ns) | 16비트 거리를 조합 나눗셈으로 변환 | 16클럭 add-3 / shift (double dabble) 순차 변환 → WNS +0.390 ns |
 
 ## 향후 개선
-- Master 자동 갱신 (주기 읽기)
+- Master 자동 갱신 주기 설정을 보드 스위치로 선택
 - 센서 드라이버 실제 파형(DHT11 40비트, ECHO) 독립 검증 자료 확보
