@@ -1,0 +1,16 @@
+# Vivado 생성 파일
+*.cache/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+*.gen/
+.Xil/
+*.jou
+*.log
+*.str
+*.backup.*
+*.pb
+xsim.dir/
+# create_project.tcl 이 만드는 프로젝트 폴더 (다시 만들 수 있음)
+vivado/
