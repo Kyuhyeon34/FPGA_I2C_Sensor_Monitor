@@ -1,11 +1,3 @@
-
-
-https://github.com/user-attachments/assets/50e319b4-4592-4841-9d01-dcafd2ca9a6d
-
-
-
-https://github.com/user-attachments/assets/f05c9c7b-91cd-4774-b785-133b8f895a52
-
 # I2C 센서 모니터링 시스템 (Basys3 Master · Slave)
 
 > 대한상공회의소 서울기술교육센터 AI 시스템반도체 SW개발자 과정 · Verilog 2인 팀 프로젝트 (Vivado 2020.2)
