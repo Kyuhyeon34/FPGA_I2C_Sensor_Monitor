@@ -1,7 +1,31 @@
 # I2C 센서 모니터링 시스템 (Basys3 Master · Slave)
 
-Basys3(xc7a35tcpg236-1) 보드 2대를 I2C로 연결해, Slave가 측정한 습도·온도·거리를 Master가 읽어
-FND · UART · SSD1306 OLED에 표시하는 Verilog 팀 프로젝트 (Vivado 2020.2)
+> 대한상공회의소 서울기술교육센터 AI 시스템반도체 SW개발자 과정 · Verilog 2인 팀 프로젝트 (Vivado 2020.2)
+
+| | |
+|---|---|
+| 📅 **기간 · 인원** | 2026.11.03 ~ 2026.11.06 · 2인 팀 (이규현 · 박수민) |
+| 🙋 **담당 (이규현)** | I2C Slave 보드 — I2C Slave FSM, 스냅샷 레지스터 맵, DHT11 · HC-SR04 센서 드라이버, 로컬 FND · UART |
+| 🛠️ **사용 기술** | Verilog · Basys3 (xc7a35t) · Vivado 2020.2 · I2C 100 kHz · DHT11 · HC-SR04 · SSD1306 OLED |
+| 📈 **결과** | Slave 테스트벤치 18개 check 모두 PASS · 두 보드 타이밍 통과 (Slave WNS +3.126 ns) · 오실로스코프 실측 SCL 99.86 kHz, 8바이트 읽기 확인 |
+
+Basys3 보드 2대를 I2C로 연결해, Slave가 측정한 습도 · 온도 · 거리를 Master가 100ms마다 읽어
+FND · UART · SSD1306 OLED에 표시합니다.
+
+<p align="center">
+  <img src="docs/images/device.jpg" width="48%">
+  <img src="docs/images/scope_read.png" width="48%">
+</p>
+<p align="center">실물 동작 · 센서 읽기 1회 실측 파형 (repeated START부터 STOP까지 9바이트)</p>
+
+📑 [발표자료 (PDF)](docs/presentation/I2C_센서_모니터링_발표자료.pdf)
+
+## 시연 영상
+
+<table>
+  <tr><th>실물 동작 시연 (온습도 · 거리 표시)</th></tr>
+  <tr><td><a href="docs/videos/demo.mp4"><img src="docs/images/poster-demo.jpg" width="100%"></a></td></tr>
+</table>
 
 ![system block diagram](docs/figs/system_block_diagram.png)
 
@@ -11,7 +35,7 @@ FND · UART · SSD1306 OLED에 표시하는 Verilog 팀 프로젝트 (Vivado 202
 | **I2C Slave** | 이규현 ([@Kyuhyeon34](https://github.com/Kyuhyeon34)) | DHT11 · HC-SR04 센서 드라이버, 스냅샷 레지스터 맵, I2C Slave FSM, 로컬 FND · UART | `slave` → `slave/` |
 | **I2C Master** | 박수민 ([@clap-min99](https://github.com/clap-min99)) | I2C Master FSM, 8바이트 자동 burst read · BTNU FND 모드 전환, 유효성 검사, BCD 변환, OLED · FND · UART | `master` → `master/` |
 
-> `master/`에는 Master 소스·핀 설정·시뮬레이션·Vivado 생성/빌드 스크립트가 포함되어 있습니다. Slave 코드는 `slave` 브랜치에 있습니다.
+> 두 보드는 각자 브랜치(`master`, `slave`)에서 개발한 뒤 `main`에 병합했습니다. `master/`, `slave/` 폴더에 소스 · 핀 설정 · 시뮬레이션 · Vivado 생성 스크립트가 있습니다.
 
 ## 기능
 - **Slave** : DHT11(습도·온도)과 HC-SR04(거리)를 각자 FSM으로 주기 측정, I2C START 순간 값을 스냅샷해 레지스터로 응답
@@ -72,14 +96,14 @@ FND · UART · SSD1306 OLED에 표시하는 Verilog 팀 프로젝트 (Vivado 202
 ![distance flow](docs/figs/distance_flow.png)
 
 ```
-master/                 I2C Master 보드 (박수민)                 [master 브랜치]
+master/                 I2C Master 보드 (박수민)
   src/                  top, i2c_master, button_pulse, binary_to_bcd16, OLED / FND / UART
   sim/                  코어·통합·OLED·자동 읽기 테스트 및 Slave 참조 RTL
   constr/               Basys3_master.xdc
   assets/               OLED 검증용 프레임 데이터
   create_project.tcl
   scripts/              비트스트림 빌드·타이밍·DRC 검증
-slave/                  I2C Slave 보드 (이규현)                  [slave 브랜치]
+slave/                  I2C Slave 보드 (이규현)
   src/
     top_slave.v         최상위 (센서 → 레지스터 → I2C, 로컬 FND · UART)
     i2c_slave.v         I2C Slave FSM (주소 0x42, 포인터 자동 증가)
@@ -109,13 +133,27 @@ OLED 출력 (시뮬레이션 RAM 복원, DHT11 무효 · 거리만 유효) :
 
 ![oled](docs/figs/oled_ram_dist256.png)
 
+## 오실로스코프 실측 파형
+
+Master 가운데 버튼(btnC) 1회로 Slave 레지스터를 읽은 실제 SDA · SCL 파형입니다 (SCL 99.86 kHz).
+
+| 습도 · Reg 0x01, 0x02 → **36.0 %** | 온도 · Reg 0x03, 0x04 → **28.4 ℃** |
+|---|---|
+| <img src="docs/images/scope_hum.png"> | <img src="docs/images/scope_temp.png"> |
+| 0x24 = 36 · 0x00 = 0 | 0x1C = 28 · 0x04 = 4 |
+
+| 거리 · Reg 0x05, 0x06 → **3 cm** |
+|---|
+| <img src="docs/images/scope_dist.png"> |
+| 0x0003 = 3 cm · STATUS 0x03 = DHT11 OK · 초음파 OK |
+
 ## Troubleshooting
 | 문제 | 원인 | 수정 |
 |---|---|---|
 | `45 → 0 → 27`처럼 값이 따로 표시 | 1바이트를 값 하나로 취급 | 8바이트 프레임 `[ID, 습도정수, 습도소수, 온도정수, 온도소수, 거리H, 거리L, STATUS]`로 읽기 |
 | `A5` 또는 `0`만 표시 | ID · 소수부 / 포인터 위치 혼동 | 매번 포인터 `0x00` 설정 후 repeated START 읽기 |
 | 반복 읽기 시 값이 밀림 | Slave 포인터 자동 증가 | 주소 지정 읽기로 시작 위치 고정 |
-| Master 거리 BCD 변환 타이밍 실패 (WNS −6.687 ns) | 16비트 거리를 조합 나눗셈으로 변환 | 16클럭 add-3 / shift (double dabble) 순차 변환 → WNS +0.390 ns |
+| Master 거리 BCD 변환 타이밍 실패 (WNS −6.687 ns) | 16비트 거리를 조합 나눗셈으로 변환 | 16클럭 add-3 / shift (double dabble) 순차 변환 → WNS +0.069 ns (OLED · 자동 읽기 포함 최종 빌드) |
 
 ## 향후 개선
 - Master 자동 갱신 주기 설정을 보드 스위치로 선택
