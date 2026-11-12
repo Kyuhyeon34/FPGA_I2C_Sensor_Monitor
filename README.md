@@ -1,3 +1,11 @@
+
+
+https://github.com/user-attachments/assets/50e319b4-4592-4841-9d01-dcafd2ca9a6d
+
+
+
+https://github.com/user-attachments/assets/f05c9c7b-91cd-4774-b785-133b8f895a52
+
 # I2C 센서 모니터링 시스템 (Basys3 Master · Slave)
 
 > 대한상공회의소 서울기술교육센터 AI 시스템반도체 SW개발자 과정 · Verilog 2인 팀 프로젝트 (Vivado 2020.2)
@@ -21,6 +29,10 @@ FND · UART · SSD1306 OLED에 표시합니다.
 📑 [발표자료 (PDF)](docs/presentation/I2C_센서_모니터링_발표자료.pdf)
 
 ## 시연 영상
+
+
+https://github.com/user-attachments/assets/9cd84f18-2583-4c86-af71-3d018148105f
+
 
 <table>
   <tr><th>실물 동작 시연 (온습도 · 거리 표시)</th></tr>
