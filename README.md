@@ -22,7 +22,6 @@ FND · UART · SSD1306 OLED에 표시합니다.
 
 ## 시연 영상
 
-
 <table>
   <tr><th>실물 동작 시연 (온습도 · 거리 표시)</th></tr>
   <tr><td><video src="https://github.com/user-attachments/assets/9cd84f18-2583-4c86-af71-3d018148105f" width="100%" controls muted></video></td></tr>
